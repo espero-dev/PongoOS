@@ -160,6 +160,7 @@ extern uint32_t sandbox_shellcode[], sandbox_shellcode_setuid_patch[], dyld_hook
 extern uint32_t nvram_shc[], nvram_shc_end[];
 extern uint32_t kdi_shc[], kdi_shc_orig[], kdi_shc_get[], kdi_shc_addr[], kdi_shc_size[], kdi_shc_new[], kdi_shc_set[], kdi_shc_end[];
 extern uint32_t fsctl_shc[], fsctl_shc_vnode_open[], fsctl_shc_stolen_slowpath[], fsctl_shc_orig_bl[], fsctl_shc_vnode_close[], fsctl_shc_stolen_fastpath[], fsctl_shc_orig_b[], fsctl_shc_end[];
+extern uint32_t mac_vnode_check_open_shc[], mac_vnode_check_open_replace[], mac_vnode_check_open_shc_end[], mac_vnode_check_open_shc_ptr[];
 
 #ifdef DEV_BUILD
 struct {
@@ -782,8 +783,12 @@ bool kpf_trustcache_callback(struct xnu_pf_patch *patch, uint32_t *opcode_stream
         lookup_in_static_trust_cache = follow_call(lookup_in_static_trust_cache);
     }
     // We legit, trust me bro.
+    DEVLOG("lookup_in_static_trust_cache at 0x%llx", xnu_rebase_va(xnu_ptr_to_va(lookup_in_static_trust_cache)));
     lookup_in_static_trust_cache[0] = 0xd2800020; // movz x0, 1
     lookup_in_static_trust_cache[1] = RET;
+    
+    DEVLOG("bl at 0x%llx", xnu_rebase_va(xnu_ptr_to_va(bl)));
+    bl[0] = 0x52802020; // mov w0, #0x101
     return true;
 }
 
@@ -1557,6 +1562,41 @@ bool vnode_lookup_callback(struct xnu_pf_patch* patch, uint32_t* opcode_stream)
     return true;
 }
 
+uint32_t *proc_name;
+bool proc_name_callback(struct xnu_pf_patch* patch, uint32_t* opcode_stream)
+{
+    if(proc_name)
+    {
+        DEVLOG("proc_name_callback: already ran, skipping...");
+        return false;
+    }
+    
+    int found = 0;
+    uint32_t* rep = opcode_stream;
+    for(size_t i = 0; i < 40; ++i)
+    {
+        uint32_t* op = rep;
+        if(op[0] == 0x12002508 /* and w8, w8, #0x3ff */ && op[1] == 0x71005d1f /* cmp w8, #0x17 */)
+        {
+            puts("KPF: Found Found proc_name");
+            found = 1;
+            break;
+        }
+        rep++;
+    }
+    
+    if(found)
+    {
+        opcode_stream -= 4;
+        
+        proc_name = opcode_stream;
+        printf("proc_name 0x%016llx\n", xnu_ptr_to_va(proc_name));
+        return true;
+    }
+    
+    return false;
+}
+
 void kpf_find_shellcode_funcs(xnu_pf_patchset_t* xnu_text_exec_patchset) {
     // to find this with r2 run:
     // /x 00008192007fbef2:00ffffff00ffffff
@@ -1606,6 +1646,19 @@ void kpf_find_shellcode_funcs(xnu_pf_patchset_t* xnu_text_exec_patchset) {
         0xffffffff
     };
     xnu_pf_maskmatch(xnu_text_exec_patchset, "ret0_gadget", iiii_matches, iiii_masks, sizeof(iiii_masks)/sizeof(uint64_t), true, (void*)ret0_gadget_callback);
+}
+
+void kpf_find_proc_name(xnu_pf_patchset_t* xnu_text_exec_patchset) {
+    
+    uint64_t x_matches[] = {
+        0x7100045f, // cmp w2, #0x1
+        0x5400000B, // b.lt
+    };
+    uint64_t x_masks[] = {
+        0xffffffff,
+        0xff00001f,
+    };
+    xnu_pf_maskmatch(xnu_text_exec_patchset, "proc_name", x_matches, x_masks, sizeof(x_masks)/sizeof(uint64_t), true, (void*)proc_name_callback);
 }
 
 static bool found_mach_traps = false;
@@ -2566,6 +2619,86 @@ void kpf_allow_mount_patch(xnu_pf_patchset_t* patchset) {
     xnu_pf_maskmatch(patchset, "allow_update_mount", matches, masks, sizeof(masks)/sizeof(uint64_t), true, (void*)allow_update_mount_callback);
 }
 
+static uint32_t *vnode_check_open;
+bool mac_vnode_check_open_callback(struct xnu_pf_patch *patch, uint32_t *opcode_stream) {
+    puts("KPF: Found mac_vnode_check_open");
+#ifdef DEV_BUILD
+    printf("opstream 0x%016llx\n", xnu_ptr_to_va(opcode_stream));
+#endif
+    
+    uint32_t *bl = find_next_insn(opcode_stream, 0x20, 0x94000000, 0xfc000000); // bl
+    if(!bl)
+    {
+        return false;
+    }
+    printf("Found bl 0x%016llx\n", xnu_ptr_to_va(bl));
+    
+    // Follow the call
+    vnode_check_open = follow_call(bl);
+    printf("vnode_check_open 0x%016llx\n", xnu_ptr_to_va(vnode_check_open));
+    return true;
+}
+
+void kpf_mac_vnode_check_open_patch(xnu_pf_patchset_t* patchset) {
+    // call mpo_vnode_check_open
+    // _mac_vnode_check_open(vfs_context_t ctx, struct vnode *vp, int acc_mode)
+    // fffffff007861670         stp        x28, x27, [sp, #-0x60]!
+    
+    uint64_t matches[] = {
+        0x52a80208,
+        0x0a0802a8,
+        0x52a80009,
+        0x6b09011f,
+    };
+    
+    uint64_t masks[] = {
+        0xffffffff,
+        0xffffffff,
+        0xffffffff,
+        0xffffffff,
+    };
+    
+    xnu_pf_maskmatch(patchset, "mac_vnode_check_open", matches, masks, sizeof(masks)/sizeof(uint64_t), true, (void*)mac_vnode_check_open_callback);
+}
+
+static uint32_t *vfs_context_pid;
+bool vfs_context_pid_callback(struct xnu_pf_patch *patch, uint32_t *opcode_stream) {
+    puts("KPF: Found vfs_context_pid");
+#ifdef DEV_BUILD
+    printf("opstream 0x%016llx\n", xnu_ptr_to_va(opcode_stream));
+#endif
+    
+    uint32_t *bl = find_next_insn(opcode_stream, 0x20, 0x94000000, 0xfc000000); // bl
+    if(!bl)
+    {
+        return false;
+    }
+    printf("Found bl 0x%016llx\n", xnu_ptr_to_va(bl));
+    
+    // Follow the call
+    vfs_context_pid = follow_call(bl);
+    printf("vfs_context_pid 0x%016llx\n", xnu_ptr_to_va(vfs_context_pid));
+    return true;
+}
+
+void kpf_vfs_context_pid_patch(xnu_pf_patchset_t* patchset) {
+    
+    uint64_t matches[] = {
+        0xeb1c0109,
+        0x54000002,
+        0xd2800000,
+        0x94000000, // bl 0x{same}
+    };
+    
+    uint64_t masks[] = {
+        0xffffffff,
+        0xff00001f,
+        0xffffffff,
+        0xfc000000,
+    };
+    
+    xnu_pf_maskmatch(patchset, "vfs_context_pid", matches, masks, sizeof(masks)/sizeof(uint64_t), true, (void*)vfs_context_pid_callback);
+}
 
 checkrain_option_t gkpf_flags, checkra1n_flags;
 
@@ -2692,6 +2825,18 @@ void command_kpf() {
     // TODO
     //struct mach_header_64* accessory_header = xnu_pf_get_kext_header(hdr, "com.apple.iokit.IOAccessoryManager");
 
+    if(checkrain_option_enabled(gkpf_flags, checkrain_kpf_option_vnode_check_open))
+    {
+        struct mach_header_64 *diskimage2_header = xnu_pf_get_kext_header(hdr, "com.apple.driver.AppleDiskImages2");
+        xnu_pf_range_t *diskimage2_text_exec_range = xnu_pf_section(diskimage2_header, "__TEXT_EXEC", "__text");
+        xnu_pf_patchset_t* diskimage2_patchset = xnu_pf_patchset_create(XNU_PF_ACCESS_32BIT);
+        
+        kpf_vfs_context_pid_patch(diskimage2_patchset);
+        xnu_pf_emit(diskimage2_patchset);
+        xnu_pf_apply(diskimage2_text_exec_range, diskimage2_patchset);
+        xnu_pf_patchset_destroy(diskimage2_patchset);
+    }
+    
     xnu_pf_patchset_t* kext_text_exec_patchset = xnu_pf_patchset_create(XNU_PF_ACCESS_32BIT);
     kpf_md0_patches(kext_text_exec_patchset);
     xnu_pf_emit(kext_text_exec_patchset);
@@ -2771,6 +2916,13 @@ void command_kpf() {
         // Signal to ramdisk that we can't have union mounts
         //checkra1n_flags |= checkrain_option_bind_mount;
     }
+    
+    if(checkrain_option_enabled(gkpf_flags, checkrain_kpf_option_vnode_check_open))
+    {
+        // 16.2+
+        kpf_find_proc_name(xnu_text_exec_patchset);
+        kpf_mac_vnode_check_open_patch(xnu_text_exec_patchset);
+    }
 
     xnu_pf_emit(xnu_text_exec_patchset);
     xnu_pf_apply(text_exec_range, xnu_text_exec_patchset);
@@ -2830,7 +2982,8 @@ void command_kpf() {
     PATCH_OP(ops, mpo_vnode_check_ioctl, ret_zero);
     PATCH_OP(ops, mpo_vnode_check_link, ret_zero);
     PATCH_OP(ops, mpo_vnode_check_listextattr, ret_zero);
-    PATCH_OP(ops, mpo_vnode_check_open, open_shellcode);
+    if(!checkrain_option_enabled(gkpf_flags, checkrain_kpf_option_vnode_check_open))
+        PATCH_OP(ops, mpo_vnode_check_open, open_shellcode);
     PATCH_OP(ops, mpo_vnode_check_readlink, ret_zero);
     PATCH_OP(ops, mpo_vnode_check_setattrlist, ret_zero);
     PATCH_OP(ops, mpo_vnode_check_setextattr, ret_zero);
@@ -3016,7 +3169,46 @@ void command_kpf() {
     {
         checkra1n_flags &= ~checkrain_option_overlay;
     }
-
+    
+    if(checkrain_option_enabled(gkpf_flags, checkrain_kpf_option_vnode_check_open))
+    {
+        if(vnode_check_open && proc_name && vfs_context_pid)
+        {
+            
+            uint32_t backup = vnode_check_open[0];
+            DEVLOG("backup: 0x%x", backup);
+            
+            shellcode_from = mac_vnode_check_open_shc;
+            shellcode_end = mac_vnode_check_open_shc_end;
+            while(shellcode_from < shellcode_end)
+            {
+                *shellcode_to++ = *shellcode_from++;
+            }
+            
+            uint32_t* repatch_shellcode_insn = (uint32_t*)(mac_vnode_check_open_replace - shellcode_from + shellcode_to);
+            if (repatch_shellcode_insn[0] != NOP) {
+                panic("Shellcode corruption");
+            }
+            repatch_shellcode_insn[0] = backup;
+            
+            uint64_t* repatch_shellcode_ptrs = (uint64_t*)(mac_vnode_check_open_shc_ptr - shellcode_from + shellcode_to);
+            if (repatch_shellcode_ptrs[0] != 0x6161616161616161) {
+                panic("Shellcode corruption");
+            }
+            repatch_shellcode_ptrs[0] = xnu_ptr_to_va(vfs_context_pid); // _vfs_context_pid
+            repatch_shellcode_ptrs[1] = xnu_ptr_to_va(proc_name); // _proc_name
+            repatch_shellcode_ptrs[2] = xnu_ptr_to_va(vnode_check_open) + 0x4; // _mac_vnode_check_open_orig
+            
+            uint32_t* tgt = (uint32_t*)(mac_vnode_check_open_shc - shellcode_from + shellcode_to);
+            
+            uint32_t delta = tgt - vnode_check_open;
+            delta &= 0x03ffffff;
+            delta |= 0x14000000;
+            *vnode_check_open = delta;
+            DEVLOG("open_hook_addr: 0x%llx -> 0x%llx base 0x%llx", xnu_ptr_to_va(vnode_check_open), xnu_ptr_to_va(tgt), xnu_ptr_to_va(shellcode_to));
+        }
+    }
+    
     if(!rootvp_string_match) // Only use underlying fs on union mounts
     {
         char *snapshotString = (char*)memmem((unsigned char *)text_cstring_range->cacheable_base, text_cstring_range->size, (uint8_t *)"com.apple.os.update-", strlen("com.apple.os.update-"));
