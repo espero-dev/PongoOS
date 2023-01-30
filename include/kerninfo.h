@@ -49,7 +49,6 @@
 #define checkrain_option_verbose_boot       (1 << 0)
 #define checkrain_kpf_option_rootfull       (1 << 8)
 #define checkrain_kpf_option_fakelaunchd    (1 << 9)
-#define checkrain_kpf_option_vnode_check_open   (1 << 10)
 
 // Global options
 #define checkrain_option_safemode           (1 << 0)

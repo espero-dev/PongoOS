@@ -29,6 +29,11 @@
 .globl _sandbox_shellcode_end
 .globl _sandbox_shellcode_setuid_patch
 .globl _dyld_hook_shellcode
+
+.globl _vnode_check_open_shc
+.globl _vnode_check_open_shc_ptr
+.globl _vnode_check_open_shc_end
+
 .align 2
 _sandbox_shellcode:
 b sandbox_shellcode_m
@@ -195,6 +200,74 @@ vnode_put:
 .quad 0x4141414141414140
 pattern:
 .quad 0x746E65766573662E // .fsevent
+
+.align 2
+_vnode_check_open_shc:
+vnode_check_open_hook:
+sub  sp, sp, #0x50
+stp  x22, x21, [sp, #0x20]
+stp  x20, x19, [sp, #0x30]
+stp  x29, x30, [sp, #0x40]
+add  x29, sp, #0x40
+mov  x19, x3
+mov  x20, x2
+mov  x21, x1
+mov  x22, x0
+add  x0, sp, #0xc
+mov  w1, #0x14
+ldr  x8, proc_selfname      // get proc name
+blr  x8
+
+ldp  w8, w9, [sp, #0xc]     // check if procname is 'IDSBlastDoorService' or not.
+ldp  w10, w11, [sp, #0x14]
+ldr  w12, [sp, #0x1c]
+mov  w13, #0x4449
+movk w13, #0x4253, lsl #16  // 'IDSB'
+cmp  w8, w13
+mov  w8, #0x616c
+movk w8, #0x7473, lsl #16   // 'last'
+ccmp w9, w8, #0x0, eq
+mov  w8, #0x6f44
+movk w8, #0x726f, lsl #16   // 'Door'
+ccmp w10, w8, #0x0, eq
+mov  w8, #0x6553
+movk w8, #0x7672, lsl #16   // 'Serv'
+ccmp w11, w8, #0x0, eq
+mov  w8, #0x6369
+movk w8, #0x65, lsl #16     // 'ice\x00'
+ccmp w12, w8, #0x0, eq
+b.eq vnode_check_open_shc$orig  // go to normal checks.
+
+vnode_check_open_shc$shellcode: // go to sandbox_shellcode_m and make sure deny .fsevent accesses
+mov  x0, x22
+mov  x1, x21
+mov  x2, x20
+mov  x3, x19
+ldp  x29, x30, [sp, #0x40]
+ldp  x20, x19, [sp, #0x30]
+ldp  x22, x21, [sp, #0x20]
+add  sp, sp, #0x50
+b    sandbox_shellcode_m
+
+vnode_check_open_shc$orig:
+mov  x0, x22
+mov  x1, x21
+mov  x2, x20
+mov  x3, x19
+ldp  x29, x30, [sp, #0x40]
+ldp  x20, x19, [sp, #0x30]
+ldp  x22, x21, [sp, #0x20]
+add  sp, sp, #0x50
+ldr  x8, vnode_check_open_orig
+br   x8
+
+_vnode_check_open_shc_ptr:
+proc_selfname:
+.quad 0x5151515151515151
+
+vnode_check_open_orig:
+.quad 0x5252525252525252
+
 _sandbox_shellcode_end:
 
 
@@ -348,78 +421,3 @@ L_fsctl_shc_mnt:
     .asciz "/fs/orig"
 .align 2
 _fsctl_shc_end:
-
-
-
-.globl _mac_vnode_check_open_shc
-.globl _mac_vnode_check_open_replace
-.globl _mac_vnode_check_open_shc_ptr
-.globl _mac_vnode_check_open_orig
-.globl _mac_vnode_check_open_shc_end
-.align 2
-_mac_vnode_check_open_shc:
-    sub  sp, sp, #0x50
-    stp  x22, x21, [sp, #0x20]
-    stp  x20, x19, [sp, #0x30]
-    stp  fp, lr, [sp, #0x40]
-    add  fp, sp, #0x40
-    mov  x19, x2
-    mov  x20, x1
-    mov  x21, x0
-
-    ldr  x8, _vfs_context_pid
-    blr  x8
-
-    ldr  x8, _proc_name
-    add  x1, sp, #0xc
-    mov  w2, #0x14
-    blr  x8
-
-    ldp  w8, w9, [sp, #0xc]
-    ldp  w10, w11, [sp, #0x14]
-    mov  w12, #0x4449
-    movk w12, #0x4253, lsl #16
-    cmp  w8, w12
-    mov  w8, #0x616c
-    movk w8, #0x7473, lsl #16
-    ccmp w9, w8, #0x0, eq
-    mov  w8, #0x6f44
-    movk w8, #0x726f, lsl #16
-    ccmp w10, w8, #0x0, eq
-    mov  w8, #0x6553
-    movk w8, #0x7672, lsl #16
-    ccmp w11, w8, #0x0, eq
-    b.eq open_orig
-
-open_ret0:
-    mov  w0, #0x0
-    b    open_ret
-
-open_orig:
-    ldr  x8, _mac_vnode_check_open_orig
-    mov  x0, x21
-    mov  x1, x20
-    mov  x2, x19
-_mac_vnode_check_open_replace:
-    nop // stp x28, x27, [sp, #-0x60]!
-    blr  x8
-
-open_ret:
-    ldp  fp, lr, [sp, #0x40]
-    ldp  x20, x19, [sp, #0x30]
-    ldp  x22, x21, [sp, #0x20]
-    add  sp, sp, #0x50
-    ret
-
-_mac_vnode_check_open_shc_ptr:
-_vfs_context_pid:
-.quad 0x6161616161616161
-
-_proc_name:
-.quad 0x6262626262626262
-
-_mac_vnode_check_open_orig: // off+4
-.quad 0x4141414141414141
-
-.align 2
-_mac_vnode_check_open_shc_end:
