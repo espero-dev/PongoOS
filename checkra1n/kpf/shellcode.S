@@ -170,7 +170,7 @@ add sp, sp, #0x20
 ret
 
 cr_dyld_path:
-.string "/fs/gen/dyld"
+.string "/binpack/lib/dyld"
 .align 2
 dyld_path:
 .string "/usr/lib/dyld"
