@@ -2897,9 +2897,9 @@ void command_kpf() {
         info->size = sizeof(struct kerninfo);
         info->base = xnu_slide_value(hdr) + 0xFFFFFFF007004000ULL;
         info->slide = xnu_slide_value(hdr);
-        info->flags = checkra1n_flags;
+        info->flags = gkpf_flags;
     }
-    if (checkrain_option_enabled(gkpf_flags, checkrain_option_verbose_boot))
+    if (checkrain_option_enabled(gkpf_flags, old_checkrain_option_verbose_boot))
         gBootArgs->Video.v_display = 0;
     tick_1 = get_ticks();
     printf("KPF: Applied patchset in %llu ms\n", (tick_1 - tick_0) / TICKS_IN_1MS);

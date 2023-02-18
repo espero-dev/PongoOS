@@ -48,6 +48,10 @@
 // KPF options
 #define checkrain_option_verbose_boot       (1 << 0)
 
+// old KPF options (pongoOS 2.5.x/checkra1n 0.12.4)
+#define old_checkrain_option_safemode       (1 << 0)
+#define old_checkrain_option_verbose_boot   (1 << 1)
+
 // Global options
 #define checkrain_option_safemode           (1 << 0)
 #define checkrain_option_bind_mount         (1 << 1)
@@ -68,6 +72,8 @@ struct kerninfo {
     uint64_t base;
     uint64_t slide;
     checkrain_option_t flags;
+    uint16_t cpid;
+    char bootargs[MAX_BOOTARGS_LEN];
 };
 struct kpfinfo {
     struct kerninfo k;
